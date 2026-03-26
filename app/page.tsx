@@ -9,6 +9,9 @@ const GRAVITY_AMOUNT = 0.12
 const BRAND = '#0260f7'
 const DOT_BG = '#0a0f1e'
 
+// Characters-per-line threshold above which a node becomes a SQUARE card
+const CARD_THRESHOLD = 22
+
 const DOT_COLORS = [
   { label: 'Navy', value: '#0a0f1e' },
   { label: 'Slate', value: '#1e293b' },
@@ -18,7 +21,34 @@ const DOT_COLORS = [
   { label: 'Crimson', value: '#1f0a0a' },
   { label: 'Teal', value: '#042020' },
   { label: 'Midnight', value: '#080820' },
+  // Light colors
+  { label: 'White', value: '#ffffff' },
+  { label: 'Cream', value: '#fefce8' },
+  { label: 'Sky', value: '#e0f2fe' },
+  { label: 'Mint', value: '#dcfce7' },
+  { label: 'Lavender', value: '#f3e8ff' },
+  { label: 'Blush', value: '#fce7f3' },
+  { label: 'Peach', value: '#ffedd5' },
+  { label: 'Gray', value: '#f1f5f9' },
 ]
+
+// Is the color "light" (needs dark text)?
+function isLightColor(hex) {
+  const h = hex.replace('#', '')
+  const r = parseInt(h.substring(0, 2), 16)
+  const g = parseInt(h.substring(2, 4), 16)
+  const b = parseInt(h.substring(4, 6), 16)
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+  return luminance > 0.55
+}
+
+// Decide if content is "big" → show as card
+function isCardContent(label) {
+  if (!label) return false
+  const lines = label.split('\n')
+  const maxLineLen = Math.max(...lines.map(l => l.length))
+  return maxLineLen > CARD_THRESHOLD || lines.length > 3
+}
 
 function getDotRadius(label) {
   if (!label) return 40
@@ -28,7 +58,22 @@ function getDotRadius(label) {
   const baseR = 40
   const byWidth = Math.max(0, maxLineLen - 10) * 3
   const byHeight = Math.max(0, numLines - 2) * 10
-  return Math.min(Math.max(baseR + byWidth + byHeight, 40), 110)
+  return Math.min(Math.max(baseR + byWidth + byHeight, 40), 85)
+}
+
+// Card dimensions for big-content nodes
+function getCardSize(label) {
+  if (!label) return { w: 160, h: 80 }
+  const lines = label.split('\n')
+  const maxLineLen = Math.max(...lines.map(l => l.length))
+  const fontSize = 12
+  const charW = fontSize * 0.62
+  const lineH = 20
+  const padX = 28
+  const padY = 24
+  const w = Math.max(160, Math.min(320, maxLineLen * charW + padX * 2))
+  const h = Math.max(80, lines.length * lineH + padY * 2)
+  return { w, h }
 }
 
 function getCurvedPath(x1, y1, x2, y2) {
@@ -78,9 +123,10 @@ export default function DotConnectors() {
   const [selectedConnection, setSelectedConnection] = useState(null)
   const [tooltip, setTooltip] = useState(null)
   const [isConnectingMode, setIsConnectingMode] = useState(false)
-  const [editingDot, setEditingDot] = useState(null) // { id, label, color }
+  const [editingDot, setEditingDot] = useState(null)
   const [editText, setEditText] = useState('')
   const [editColor, setEditColor] = useState(DOT_BG)
+  const [customColor, setCustomColor] = useState('#0260f7')
   const transformRef = useRef(transform)
   const dotsRef = useRef(dots)
 
@@ -95,7 +141,6 @@ export default function DotConnectors() {
 
   useEffect(() => { saveData(dots, connections) }, [dots, connections])
 
-  // Auto-grow textarea
   useEffect(() => {
     const el = textareaRef.current
     if (!el) return
@@ -103,7 +148,6 @@ export default function DotConnectors() {
     el.style.height = Math.min(el.scrollHeight, 160) + 'px'
   }, [inputText])
 
-  // Focus edit textarea when editing
   useEffect(() => {
     if (editingDot && editTextareaRef.current) {
       editTextareaRef.current.focus()
@@ -116,8 +160,16 @@ export default function DotConnectors() {
     return { x: (sx - x) / scale, y: (sy - y) / scale }
   }, [])
 
+  // Hit detection for both dots (circles) and cards (rectangles)
   const hitDot = useCallback((cx, cy) => {
     return dotsRef.current.find(d => {
+      if (isCardContent(d.label)) {
+        const { w, h } = getCardSize(d.label)
+        return (
+          cx >= d.x - w / 2 - 8 && cx <= d.x + w / 2 + 8 &&
+          cy >= d.y - h / 2 - 8 && cy <= d.y + h / 2 + 8
+        )
+      }
       const r = getDotRadius(d.label) + 8
       const dx = d.x - cx, dy = d.y - cy
       return Math.sqrt(dx * dx + dy * dy) <= r
@@ -172,7 +224,7 @@ export default function DotConnectors() {
   }, [])
 
   const onPointerDown = useCallback((e) => {
-    if (editingDot) return // block canvas interaction while editing
+    if (editingDot) return
 
     const rect = containerRef.current.getBoundingClientRect()
     const sx = e.clientX - rect.left
@@ -370,7 +422,11 @@ export default function DotConnectors() {
   const selectedDotData = dots.find(d => d.id === selectedDot)
   const selectedConnData = selectedConnection ? connections.find(c => c.id === selectedConnection) : null
 
-  // Project canvas coord -> screen coord
+  // Connected connections to the selected dot (for highlight)
+  const connectedConnectionIds = selectedDot
+    ? new Set(connections.filter(c => c.from === selectedDot || c.to === selectedDot).map(c => c.id))
+    : new Set()
+
   const getScreenPos = (dot, offsetX = 0, offsetY = 0) => {
     if (!dot) return null
     const { x: tx, y: ty, scale } = transform
@@ -379,11 +435,25 @@ export default function DotConnectors() {
     return { sx, sy }
   }
 
-  const selectedDotR = selectedDotData ? getDotRadius(selectedDotData.label) : 0
-  const deletePos = selectedDotData ? getScreenPos(selectedDotData, selectedDotR - 6, -selectedDotR + 6) : null
-  const editPos = selectedDotData ? getScreenPos(selectedDotData, -selectedDotR + 6, -selectedDotR + 6) : null
+  // Overlay button positions (works for both circle and card)
+  const getOverlayButtonOffsets = (dot) => {
+    if (!dot) return { deletePos: null, editPos: null }
+    if (isCardContent(dot.label)) {
+      const { w, h } = getCardSize(dot.label)
+      const deletePos = getScreenPos(dot, w / 2 + 4, -h / 2 - 4)
+      const editPos = getScreenPos(dot, -w / 2 - 4, -h / 2 - 4)
+      return { deletePos, editPos }
+    }
+    const r = getDotRadius(dot.label)
+    const deletePos = getScreenPos(dot, r - 6, -r + 6)
+    const editPos = getScreenPos(dot, -r + 6, -r + 6)
+    return { deletePos, editPos }
+  }
 
-  // Connection midpoint for delete button
+  const { deletePos, editPos } = selectedDotData
+    ? getOverlayButtonOffsets(selectedDotData)
+    : { deletePos: null, editPos: null }
+
   const getConnMidpoint = (conn) => {
     const a = dotMap[conn.from], b = dotMap[conn.to]
     if (!a || !b) return null
@@ -397,6 +467,9 @@ export default function DotConnectors() {
       sy: my * scale + ty,
     }
   }
+
+  // Unique animation id for selected-dot connections
+  const animId = useRef(0)
 
   return (
     <div style={{
@@ -484,6 +557,15 @@ export default function DotConnectors() {
         .dc-conn-delete-btn { background: #ef4444; }
         .dc-conn-delete-btn:hover { background: #dc2626; transform: translate(-50%, -50%) scale(1.15); }
 
+        /* Animated connection highlight */
+        @keyframes connFlow {
+          0%   { stroke-dashoffset: 30; }
+          100% { stroke-dashoffset: 0; }
+        }
+        .conn-highlighted {
+          animation: connFlow 0.5s linear infinite;
+        }
+
         /* Edit modal */
         .dc-edit-modal {
           position: absolute;
@@ -493,7 +575,7 @@ export default function DotConnectors() {
           border-radius: 14px;
           padding: 16px;
           min-width: 260px;
-          max-width: 320px;
+          max-width: 340px;
           box-shadow: 0 8px 32px rgba(0,0,0,0.6);
           backdrop-filter: blur(16px);
           pointer-events: all;
@@ -512,7 +594,7 @@ export default function DotConnectors() {
           outline: none;
           line-height: 1.5;
           min-height: 80px;
-          max-height: 180px;
+          max-height: 200px;
           overflow-y: auto;
         }
         .dc-edit-modal textarea:focus { border-color: ${BRAND}; }
@@ -525,6 +607,28 @@ export default function DotConnectors() {
         }
         .dc-color-swatch:hover { transform: scale(1.15); }
         .dc-color-swatch.selected { border-color: #fff; }
+
+        /* Custom color picker row */
+        .dc-custom-color-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-top: 8px;
+        }
+        .dc-custom-color-row input[type="color"] {
+          width: 28px;
+          height: 28px;
+          border-radius: 50%;
+          border: 2px solid rgba(255,255,255,0.25);
+          padding: 0;
+          cursor: pointer;
+          background: transparent;
+          appearance: none;
+          -webkit-appearance: none;
+          overflow: hidden;
+        }
+        .dc-custom-color-row input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+        .dc-custom-color-row input[type="color"]::-webkit-color-swatch { border: none; border-radius: 50%; }
       `}</style>
 
       {/* TOP NAV */}
@@ -607,6 +711,13 @@ export default function DotConnectors() {
 
         {/* Main SVG */}
         <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible', pointerEvents: 'none' }}>
+          <defs>
+            {/* Animated dash filter for highlighted connections */}
+            <filter id="connGlow">
+              <feGaussianBlur stdDeviation="3" result="blur" />
+              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
           <g transform={`translate(${transform.x},${transform.y}) scale(${transform.scale})`}>
 
             {/* Connections */}
@@ -615,21 +726,55 @@ export default function DotConnectors() {
               if (!a || !b) return null
               const d = getCurvedPath(a.x, a.y, b.x, b.y)
               const isSelConn = selectedConnection === conn.id
+              // Highlight if connected to selected dot
+              const isHighlighted = connectedConnectionIds.has(conn.id) && !isSelConn
+
               return (
                 <g key={conn.id} style={{ pointerEvents: 'visibleStroke' }}>
-                  <path d={d} fill="none" stroke="transparent" strokeWidth={18}
+                  {/* Wide invisible hit area — always clickable */}
+                  <path d={d} fill="none" stroke="transparent" strokeWidth={22}
                     style={{ pointerEvents: 'visibleStroke', cursor: 'pointer' }}
-                    onClick={() => setSelectedConnection(conn.id === selectedConnection ? null : conn.id)}
-                    onDoubleClick={() => deleteConnection(conn.id)} />
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setSelectedConnection(conn.id === selectedConnection ? null : conn.id)
+                      setSelectedDot(null)
+                    }}
+                    onDoubleClick={(e) => { e.stopPropagation(); deleteConnection(conn.id) }} />
+
+                  {/* Glow layer for highlighted */}
+                  {isHighlighted && (
+                    <path d={d} fill="none"
+                      stroke={BRAND}
+                      strokeWidth={10}
+                      strokeLinecap="round"
+                      opacity={0.18}
+                      filter="url(#connGlow)"
+                      style={{ pointerEvents: 'none' }} />
+                  )}
+
+                  {/* Base thick stroke — Improvement #1: thicker lines */}
                   <path d={d} fill="none"
-                    stroke={isSelConn ? '#ef4444' : `${BRAND}33`}
-                    strokeWidth={isSelConn ? 5 : 4}
-                    strokeLinecap="round" />
-                  <path d={d} fill="none"
-                    stroke={isSelConn ? 'rgba(248,113,113,0.7)' : 'rgba(255,255,255,0.4)'}
-                    strokeWidth={isSelConn ? 1.8 : 1.2}
+                    stroke={
+                      isSelConn ? '#ef4444'
+                      : isHighlighted ? BRAND
+                      : `${BRAND}44`
+                    }
+                    strokeWidth={isSelConn ? 6 : isHighlighted ? 6 : 5}
                     strokeLinecap="round"
-                    strokeDasharray={isSelConn ? '5 3' : undefined} />
+                    style={{ pointerEvents: 'none' }} />
+
+                  {/* Shine / animated line */}
+                  <path d={d} fill="none"
+                    stroke={
+                      isSelConn ? 'rgba(248,113,113,0.85)'
+                      : isHighlighted ? 'rgba(255,255,255,0.9)'
+                      : 'rgba(255,255,255,0.45)'
+                    }
+                    strokeWidth={isSelConn ? 2.2 : isHighlighted ? 2.2 : 1.5}
+                    strokeLinecap="round"
+                    strokeDasharray={isSelConn ? '6 4' : isHighlighted ? '8 5' : undefined}
+                    className={isHighlighted ? 'conn-highlighted' : undefined}
+                    style={{ pointerEvents: 'none' }} />
                 </g>
               )
             })}
@@ -644,19 +789,87 @@ export default function DotConnectors() {
 
             {/* Dots */}
             {dots.map(dot => {
-              const r = getDotRadius(dot.label)
               const isSelected = selectedDot === dot.id
               const isConnecting = connectingFrom.current?.id === dot.id
               const dotColor = dot.color || DOT_BG
+              const lightText = !isLightColor(dotColor)
+              const textColor = lightText ? '#ffffff' : '#0a0f1e'
+              const borderColor = isLightColor(dotColor) ? BRAND : BRAND
 
-              // font size based on radius and content
+              const isCard = isCardContent(dot.label)
+
+              if (isCard) {
+                // ── CARD (square) node ──
+                const { w, h } = getCardSize(dot.label)
+                const lines = dot.label.split('\n')
+                const fontSize = 12
+
+                return (
+                  <g key={dot.id} transform={`translate(${dot.x},${dot.y})`}>
+                    {/* Pulse ring */}
+                    {(isSelected || isConnecting) && (
+                      <rect
+                        x={-w / 2 - 14} y={-h / 2 - 14}
+                        width={w + 28} height={h + 28}
+                        rx={16} ry={16}
+                        fill="none" stroke={BRAND} strokeWidth={2} opacity={0.5}>
+                        <animate attributeName="opacity" from="0.6" to="0" dur="1s" repeatCount="indefinite" />
+                        <animate attributeName="x" from={-w / 2 - 10} to={-w / 2 - 16} dur="1s" repeatCount="indefinite" />
+                        <animate attributeName="y" from={-h / 2 - 10} to={-h / 2 - 16} dur="1s" repeatCount="indefinite" />
+                        <animate attributeName="width" from={w + 20} to={w + 32} dur="1s" repeatCount="indefinite" />
+                        <animate attributeName="height" from={h + 20} to={h + 32} dur="1s" repeatCount="indefinite" />
+                      </rect>
+                    )}
+                    {/* Shadow */}
+                    <rect x={-w / 2 + 4} y={-h / 2 + 8} width={w} height={h} rx={12}
+                      fill="rgba(0,0,0,0.35)" />
+                    {/* Glow */}
+                    {isSelected && (
+                      <rect x={-w / 2 - 4} y={-h / 2 - 4} width={w + 8} height={h + 8} rx={14}
+                        fill="none" stroke={BRAND} strokeWidth={2.5} opacity={0.6} />
+                    )}
+                    {/* Card body */}
+                    <rect x={-w / 2} y={-h / 2} width={w} height={h} rx={12}
+                      fill={dotColor} />
+                    {/* Border */}
+                    <rect x={-w / 2} y={-h / 2} width={w} height={h} rx={12}
+                      fill="none" stroke={borderColor} strokeWidth={2} opacity={0.85} />
+
+                    {/* Text via foreignObject */}
+                    <foreignObject
+                      x={-w / 2 + 12} y={-h / 2 + 10}
+                      width={w - 24} height={h - 20}
+                      style={{ pointerEvents: 'none' }}
+                    >
+                      <div xmlns="http://www.w3.org/1999/xhtml" style={{
+                        width: '100%', height: '100%',
+                        display: 'flex', alignItems: 'center', justifyContent: 'flex-start',
+                        textAlign: 'left',
+                        color: textColor,
+                        fontSize: `${fontSize}px`,
+                        fontFamily: "'IBM Plex Mono', monospace",
+                        fontWeight: '600',
+                        lineHeight: 1.55,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        overflowWrap: 'break-word',
+                        overflow: 'hidden',
+                      }}>
+                        {dot.label}
+                      </div>
+                    </foreignObject>
+                  </g>
+                )
+              }
+
+              // ── CIRCLE dot ──
+              const r = getDotRadius(dot.label)
               const lines = dot.label.split('\n')
               const maxLen = Math.max(...lines.map(l => l.length))
               const fontSize = Math.max(9, Math.min(13, (r * 1.7) / Math.max(maxLen, 1)))
 
               return (
                 <g key={dot.id} transform={`translate(${dot.x},${dot.y})`}>
-                  {/* Pulse ring */}
                   {(isSelected || isConnecting) && (
                     <circle r={r + 12} fill="none"
                       stroke={BRAND}
@@ -665,18 +878,13 @@ export default function DotConnectors() {
                       <animate attributeName="opacity" from="0.6" to="0" dur="1s" repeatCount="indefinite" />
                     </circle>
                   )}
-                  {/* Shadow */}
                   <ellipse rx={r * 0.8} ry={r * 0.2} cy={r + 4} fill="rgba(0,0,0,0.4)" />
-                  {/* Glow when selected */}
                   {isSelected && (
                     <circle r={r + 4} fill="none" stroke={BRAND} strokeWidth={2.5} opacity={0.6} />
                   )}
-                  {/* Body */}
                   <circle r={r} fill={dotColor} />
-                  {/* Brand color border */}
-                  <circle r={r} fill="none" stroke={BRAND} strokeWidth={2} opacity={0.85} />
+                  <circle r={r} fill="none" stroke={borderColor} strokeWidth={2} opacity={0.85} />
 
-                  {/* Label via foreignObject — wraps text properly */}
                   <foreignObject
                     x={-(r - DOT_PADDING / 2)}
                     y={-(r - DOT_PADDING / 2)}
@@ -688,7 +896,7 @@ export default function DotConnectors() {
                       width: '100%', height: '100%',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       textAlign: 'center',
-                      color: '#ffffff',
+                      color: textColor,
                       fontSize: `${fontSize}px`,
                       fontFamily: "'IBM Plex Mono', monospace",
                       fontWeight: '600',
@@ -732,14 +940,14 @@ export default function DotConnectors() {
           >✎</button>
         )}
 
-        {/* Delete connection button (shown when connection is selected) */}
+        {/* Delete connection button — always visible when connection is selected (Improvement #2) */}
         {selectedConnData && (() => {
           const mid = getConnMidpoint(selectedConnData)
           if (!mid) return null
           return (
             <button
               className="dc-icon-btn dc-conn-delete-btn"
-              style={{ left: mid.sx, top: mid.sy, width: 26, height: 26 }}
+              style={{ left: mid.sx, top: mid.sy, width: 28, height: 28 }}
               onPointerDown={e => e.stopPropagation()}
               onClick={e => { e.stopPropagation(); deleteConnection(selectedConnData.id) }}
               title="Delete connection"
@@ -752,17 +960,17 @@ export default function DotConnectors() {
           const dot = dots.find(d => d.id === editingDot.id)
           if (!dot) return null
           const { x: tx, y: ty, scale } = transform
-          // Position modal near the dot, but keep it on screen
+          const isCard = isCardContent(dot.label)
+          const halfW = isCard ? getCardSize(dot.label).w / 2 : getDotRadius(dot.label)
           const dotSx = dot.x * scale + tx
           const dotSy = dot.y * scale + ty
-          const modalW = 280
-          const modalH = 220
-          let mx = dotSx + (getDotRadius(dot.label) + 10) * scale
+          const modalW = 300
+          const modalH = 300
+          let mx = dotSx + (halfW + 10) * scale
           let my = dotSy - modalH / 2
-          // clamp to viewport
           const vw = containerRef.current?.clientWidth || 800
           const vh = containerRef.current?.clientHeight || 600
-          if (mx + modalW > vw - 8) mx = dotSx - (getDotRadius(dot.label) + 10) * scale - modalW
+          if (mx + modalW > vw - 8) mx = dotSx - (halfW + 10) * scale - modalW
           if (mx < 8) mx = 8
           if (my < 50) my = 50
           if (my + modalH > vh - 80) my = vh - modalH - 80
@@ -788,23 +996,45 @@ export default function DotConnectors() {
                 style={{ width: '100%', boxSizing: 'border-box' }}
                 placeholder="Node content..."
               />
-              {/* Color picker */}
+
+              {/* Color picker — dark + light presets + custom */}
               <div style={{ marginTop: 10, marginBottom: 10 }}>
                 <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)', marginBottom: 6, letterSpacing: '0.06em' }}>
                   DOT COLOR
                 </div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
                   {DOT_COLORS.map(col => (
                     <div
                       key={col.value}
                       className={`dc-color-swatch${editColor === col.value ? ' selected' : ''}`}
-                      style={{ background: col.value, border: `2px solid ${editColor === col.value ? '#fff' : BRAND + '66'}` }}
+                      style={{ background: col.value, border: `2px solid ${editColor === col.value ? '#fff' : BRAND + '55'}` }}
                       title={col.label}
                       onClick={() => setEditColor(col.value)}
                     />
                   ))}
                 </div>
+
+                {/* Custom color picker */}
+                <div className="dc-custom-color-row">
+                  <input
+                    type="color"
+                    value={customColor}
+                    onChange={e => { setCustomColor(e.target.value); setEditColor(e.target.value) }}
+                    title="Custom color"
+                  />
+                  <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)', letterSpacing: '0.05em' }}>
+                    Custom: {editColor}
+                  </span>
+                  {/* Mini preview swatch */}
+                  <div style={{
+                    width: 18, height: 18, borderRadius: '50%',
+                    background: editColor,
+                    border: `2px solid rgba(255,255,255,0.3)`,
+                    flexShrink: 0,
+                  }} />
+                </div>
               </div>
+
               <div style={{ display: 'flex', gap: 8 }}>
                 <button
                   onClick={saveEditDot}
@@ -905,10 +1135,10 @@ export default function DotConnectors() {
         }}>
           <div>✨ <strong>Click "Connect Mode"</strong> → click first dot → click second dot</div>
           <div>✏️ Click dot → select · click ✎ → edit label &amp; color</div>
-          <div>🔗 Click a connection line → select it · click ✕ → delete</div>
-          <div>🖱️ Double-click connection → quick delete</div>
+          <div>🔗 Click a connection line → click ✕ to delete · double-click → quick delete</div>
+          <div>💡 Click a dot → connected lines glow &amp; animate</div>
+          <div>📦 Long text auto-becomes a card; short text stays a circle</div>
           <div>🎯 Drag dot → move · scroll → zoom · drag canvas → pan</div>
-          <div>❌ Click ✕ on selected dot → delete node</div>
         </div>
       </div>
 
@@ -939,7 +1169,7 @@ export default function DotConnectors() {
                 addDot()
               }
             }}
-            placeholder="Type your node name... (Shift+Enter for new line)"
+            placeholder="Type your node name... (Shift+Enter for new line, long text → card)"
             className="dc-textarea"
             rows={1}
           />
